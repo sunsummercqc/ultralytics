@@ -1,0 +1,14 @@
+#data path
+
+# train and val data as 1) directory: path/images/, 2) file: path/images.txt, or 3) list: [path1/images/, path2/images/]
+# train: [train.txt]
+# val: [val.txt]
+# test: [test.txt]
+train: /root/yolo/dataset/sbd_dataset/coco/images/train2017
+val: /root/yolo/dataset/sbd_dataset/coco/images/val2017
+
+# number of classes
+nc: 7
+
+# class names
+names: [ 'write', 'read', 'lookup', 'turn_head', 'raise_hand', 'stand', 'discuss']
