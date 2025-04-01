@@ -1,4 +1,4 @@
-# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+# Ultralytics YOLO 🚀, AGPL-3.0 license
 
 import torch
 
@@ -16,30 +16,28 @@ class NASPredictor(BasePredictor):
     scaling the bounding boxes to fit the original image dimensions.
 
     Attributes:
-        args (Namespace): Namespace containing various configurations for post-processing including confidence threshold,
-            IoU threshold, agnostic NMS flag, maximum detections, and class filtering options.
-        model (torch.nn.Module): The YOLO NAS model used for inference.
-        batch (List): Batch of inputs for processing.
+        args (Namespace): Namespace containing various configurations for post-processing.
 
-    Examples:
-        >>> from ultralytics import NAS
-        >>> model = NAS("yolo_nas_s")
-        >>> predictor = model.predictor
+    Example:
+        ```python
+        from ultralytics import NAS
 
-        Assume that raw_preds, img, orig_imgs are available
-        >>> results = predictor.postprocess(raw_preds, img, orig_imgs)
+        model = NAS("yolo_nas_s")
+        predictor = model.predictor
+        # Assumes that raw_preds, img, orig_imgs are available
+        results = predictor.postprocess(raw_preds, img, orig_imgs)
+        ```
 
-    Notes:
+    Note:
         Typically, this class is not instantiated directly. It is used internally within the `NAS` class.
     """
 
     def postprocess(self, preds_in, img, orig_imgs):
         """Postprocess predictions and returns a list of Results objects."""
-        # Convert boxes from xyxy to xywh format and concatenate with class scores
+        # Cat boxes and class scores
         boxes = ops.xyxy2xywh(preds_in[0][0])
         preds = torch.cat((boxes, preds_in[0][1]), -1).permute(0, 2, 1)
 
-        # Apply non-maximum suppression to filter overlapping detections
         preds = ops.non_max_suppression(
             preds,
             self.args.conf,
@@ -54,7 +52,6 @@ class NASPredictor(BasePredictor):
 
         results = []
         for pred, orig_img, img_path in zip(preds, orig_imgs, self.batch[0]):
-            # Scale bounding boxes to match original image dimensions
             pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
             results.append(Results(orig_img, path=img_path, names=self.model.names, boxes=pred))
         return results

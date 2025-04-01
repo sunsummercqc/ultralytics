@@ -1,6 +1,4 @@
-# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
-
-from pathlib import Path
+# Ultralytics YOLO 🚀, AGPL-3.0 license
 
 from ultralytics.utils import LOGGER, SETTINGS, TESTS_RUNNING, checks
 
@@ -13,6 +11,7 @@ try:
 
     import os
     import re
+    from pathlib import Path
 
     # DVCLive logger instance
     live = None
@@ -26,7 +25,7 @@ except (ImportError, AssertionError, TypeError):
     dvclive = None
 
 
-def _log_images(path: Path, prefix: str = "") -> None:
+def _log_images(path, prefix=""):
     """Logs images at specified path with an optional prefix using DVCLive."""
     if live:
         name = path.name
@@ -40,7 +39,7 @@ def _log_images(path: Path, prefix: str = "") -> None:
         live.log_image(os.path.join(prefix, name), path)
 
 
-def _log_plots(plots: dict, prefix: str = "") -> None:
+def _log_plots(plots, prefix=""):
     """Logs plot images for training progress if they have not been previously processed."""
     for name, params in plots.items():
         timestamp = params["timestamp"]
@@ -49,7 +48,7 @@ def _log_plots(plots: dict, prefix: str = "") -> None:
             _processed_plots[name] = timestamp
 
 
-def _log_confusion_matrix(validator) -> None:
+def _log_confusion_matrix(validator):
     """Logs the confusion matrix for the given validator using DVCLive."""
     targets = []
     preds = []
@@ -66,7 +65,7 @@ def _log_confusion_matrix(validator) -> None:
     live.log_sklearn_plot("confusion_matrix", targets, preds, name="cf.json", normalized=True)
 
 
-def on_pretrain_routine_start(trainer) -> None:
+def on_pretrain_routine_start(trainer):
     """Initializes DVCLive logger for training metadata during pre-training routine."""
     try:
         global live
@@ -76,24 +75,24 @@ def on_pretrain_routine_start(trainer) -> None:
         LOGGER.warning(f"WARNING ⚠️ DVCLive installed but not initialized correctly, not logging this run. {e}")
 
 
-def on_pretrain_routine_end(trainer) -> None:
+def on_pretrain_routine_end(trainer):
     """Logs plots related to the training process at the end of the pretraining routine."""
     _log_plots(trainer.plots, "train")
 
 
-def on_train_start(trainer) -> None:
+def on_train_start(trainer):
     """Logs the training parameters if DVCLive logging is active."""
     if live:
         live.log_params(trainer.args)
 
 
-def on_train_epoch_start(trainer) -> None:
+def on_train_epoch_start(trainer):
     """Sets the global variable _training_epoch value to True at the start of training each epoch."""
     global _training_epoch
     _training_epoch = True
 
 
-def on_fit_epoch_end(trainer) -> None:
+def on_fit_epoch_end(trainer):
     """Logs training metrics and model info, and advances to next step on the end of each fit epoch."""
     global _training_epoch
     if live and _training_epoch:
@@ -114,7 +113,7 @@ def on_fit_epoch_end(trainer) -> None:
         _training_epoch = False
 
 
-def on_train_end(trainer) -> None:
+def on_train_end(trainer):
     """Logs the best metrics, plots, and confusion matrix at the end of training if DVCLive is active."""
     if live:
         # At the end log the best metrics. It runs validator on the best model internally.

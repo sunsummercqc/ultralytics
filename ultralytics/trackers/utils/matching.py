@@ -1,4 +1,4 @@
-# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+# Ultralytics YOLO 🚀, AGPL-3.0 license
 
 import numpy as np
 import scipy
@@ -13,7 +13,7 @@ try:
 except (ImportError, AssertionError, AttributeError):
     from ultralytics.utils.checks import check_requirements
 
-    check_requirements("lap>=0.5.12")  # https://github.com/gatagat/lap
+    check_requirements("lapx>=0.5.2")  # update to lap package from https://github.com/rathaROG/lapx
     import lap
 
 
@@ -27,9 +27,10 @@ def linear_assignment(cost_matrix: np.ndarray, thresh: float, use_lap: bool = Tr
         use_lap (bool): Use lap.lapjv for the assignment. If False, scipy.optimize.linear_sum_assignment is used.
 
     Returns:
-        matched_indices (np.ndarray): Array of matched indices of shape (K, 2), where K is the number of matches.
-        unmatched_a (np.ndarray): Array of unmatched indices from the first set, with shape (L,).
-        unmatched_b (np.ndarray): Array of unmatched indices from the second set, with shape (M,).
+        (tuple): A tuple containing:
+            - matched_indices (np.ndarray): Array of matched indices of shape (K, 2), where K is the number of matches.
+            - unmatched_a (np.ndarray): Array of unmatched indices from the first set, with shape (L,).
+            - unmatched_b (np.ndarray): Array of unmatched indices from the second set, with shape (M,).
 
     Examples:
         >>> cost_matrix = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
@@ -55,8 +56,8 @@ def linear_assignment(cost_matrix: np.ndarray, thresh: float, use_lap: bool = Tr
             unmatched_a = list(np.arange(cost_matrix.shape[0]))
             unmatched_b = list(np.arange(cost_matrix.shape[1]))
         else:
-            unmatched_a = list(frozenset(np.arange(cost_matrix.shape[0])) - frozenset(matches[:, 0]))
-            unmatched_b = list(frozenset(np.arange(cost_matrix.shape[1])) - frozenset(matches[:, 1]))
+            unmatched_a = list(set(np.arange(cost_matrix.shape[0])) - set(matches[:, 0]))
+            unmatched_b = list(set(np.arange(cost_matrix.shape[1])) - set(matches[:, 1]))
 
     return matches, unmatched_a, unmatched_b
 
@@ -66,11 +67,11 @@ def iou_distance(atracks: list, btracks: list) -> np.ndarray:
     Compute cost based on Intersection over Union (IoU) between tracks.
 
     Args:
-        atracks (List[STrack] | List[np.ndarray]): List of tracks 'a' or bounding boxes.
-        btracks (List[STrack] | List[np.ndarray]): List of tracks 'b' or bounding boxes.
+        atracks (list[STrack] | list[np.ndarray]): List of tracks 'a' or bounding boxes.
+        btracks (list[STrack] | list[np.ndarray]): List of tracks 'b' or bounding boxes.
 
     Returns:
-        (np.ndarray): Cost matrix computed based on IoU with shape (len(atracks), len(btracks)).
+        (np.ndarray): Cost matrix computed based on IoU.
 
     Examples:
         Compute IoU distance between two sets of tracks
@@ -106,8 +107,8 @@ def embedding_distance(tracks: list, detections: list, metric: str = "cosine") -
     Compute distance between tracks and detections based on embeddings.
 
     Args:
-        tracks (List[STrack]): List of tracks, where each track contains embedding features.
-        detections (List[BaseTrack]): List of detections, where each detection contains embedding features.
+        tracks (list[STrack]): List of tracks, where each track contains embedding features.
+        detections (list[BaseTrack]): List of detections, where each detection contains embedding features.
         metric (str): Metric for distance computation. Supported metrics include 'cosine', 'euclidean', etc.
 
     Returns:
@@ -133,11 +134,11 @@ def embedding_distance(tracks: list, detections: list, metric: str = "cosine") -
 
 def fuse_score(cost_matrix: np.ndarray, detections: list) -> np.ndarray:
     """
-    Fuse cost matrix with detection scores to produce a single similarity matrix.
+    Fuses cost matrix with detection scores to produce a single similarity matrix.
 
     Args:
         cost_matrix (np.ndarray): The matrix containing cost values for assignments, with shape (N, M).
-        detections (List[BaseTrack]): List of detections, each containing a score attribute.
+        detections (list[BaseTrack]): List of detections, each containing a score attribute.
 
     Returns:
         (np.ndarray): Fused similarity matrix with shape (N, M).

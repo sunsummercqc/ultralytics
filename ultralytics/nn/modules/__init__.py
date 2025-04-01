@@ -1,20 +1,20 @@
-# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+# Ultralytics YOLO 🚀, AGPL-3.0 license
 """
 Ultralytics modules.
 
-This module provides access to various neural network components used in Ultralytics models, including convolution blocks,
-attention mechanisms, transformer components, and detection/segmentation heads.
-
-Examples:
+Example:
     Visualize a module with Netron.
-    >>> from ultralytics.nn.modules import *
-    >>> import torch
-    >>> import os
-    >>> x = torch.ones(1, 128, 40, 40)
-    >>> m = Conv(128, 128)
-    >>> f = f"{m._get_name()}.onnx"
-    >>> torch.onnx.export(m, x, f)
-    >>> os.system(f"onnxslim {f} {f} && open {f}")  # pip install onnxslim
+    ```python
+    from ultralytics.nn.modules import *
+    import torch
+    import os
+
+    x = torch.ones(1, 128, 40, 40)
+    m = Conv(128, 128)
+    f = f"{m._get_name()}.onnx"
+    torch.onnx.export(m, x, f)
+    os.system(f"onnxslim {f} {f} && open {f}")  # pip install onnxslim
+    ```
 """
 
 from .block import (
@@ -30,9 +30,8 @@ from .block import (
     SPP,
     SPPELAN,
     SPPF,
-    A2C2f,
     AConv,
-    ADown,
+    # ADown,
     Attention,
     BNContrastiveHead,
     Bottleneck,
@@ -43,9 +42,10 @@ from .block import (
     C2fPSA,
     C3Ghost,
     C3k2,
+    C3k,
     C3x,
-    CBFuse,
-    CBLinear,
+    # CBFuse,
+    # CBLinear,
     ContrastiveHead,
     GhostBottleneck,
     HGBlock,
@@ -53,11 +53,11 @@ from .block import (
     ImagePoolingAttn,
     Proto,
     RepC3,
-    RepNCSPELAN4,
+    # RepNCSPELAN4,
     RepVGGDW,
     ResNetLayer,
     SCDown,
-    TorchVision,
+    A2C2f,
 )
 from .conv import (
     CBAM,
@@ -67,10 +67,10 @@ from .conv import (
     Conv2,
     ConvTranspose,
     DWConv,
+    DSConv,
     DWConvTranspose2d,
     Focus,
     GhostConv,
-    Index,
     LightConv,
     RepConv,
     SpatialAttention,
@@ -95,6 +95,7 @@ __all__ = (
     "LightConv",
     "RepConv",
     "DWConv",
+    "DSConv",
     "DWConvTranspose2d",
     "ConvTranspose",
     "Focus",
@@ -117,6 +118,7 @@ __all__ = (
     "C3",
     "C2f",
     "C3k2",
+    "C3k",
     "SCDown",
     "C2fPSA",
     "C2PSA",
@@ -147,11 +149,11 @@ __all__ = (
     "ImagePoolingAttn",
     "ContrastiveHead",
     "BNContrastiveHead",
-    "RepNCSPELAN4",
-    "ADown",
+    # "RepNCSPELAN4",
+    # "ADown",
     "SPPELAN",
-    "CBFuse",
-    "CBLinear",
+    # "CBFuse",
+    # "CBLinear",
     "AConv",
     "ELAN1",
     "RepVGGDW",
@@ -159,7 +161,5 @@ __all__ = (
     "C2fCIB",
     "Attention",
     "PSA",
-    "TorchVision",
-    "Index",
-    "A2C2f",
+    "A2C2f"
 )

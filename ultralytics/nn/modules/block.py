@@ -1,4 +1,4 @@
-# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
+# Ultralytics YOLO 🚀, AGPL-3.0 license
 """Block modules."""
 
 import torch
@@ -9,6 +9,13 @@ from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
 from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
 from .transformer import TransformerBlock
+
+try:
+    from flash_attn.flash_attn_interface import flash_attn_func
+    FLASH_ATTN_FLAG = True
+except ImportError as e:
+    # assert False, "import FlashAttention error! Please install FlashAttention first."
+    FLASH_ATTN_FLAG = False
 
 __all__ = (
     "DFL",
@@ -33,13 +40,14 @@ __all__ = (
     "Proto",
     "RepC3",
     "ResNetLayer",
-    "RepNCSPELAN4",
+    # "RepNCSPELAN4",
     "ELAN1",
-    "ADown",
+    # "ADown",
     "AConv",
     "SPPELAN",
-    "CBFuse",
-    "CBLinear",
+    # "CBFuse",
+    # "CBLinear",
+    "C3k",
     "C3k2",
     "C2fPSA",
     "C2PSA",
@@ -49,7 +57,8 @@ __all__ = (
     "Attention",
     "PSA",
     "SCDown",
-    "TorchVision",
+    "ABlock",
+    "A2C2f"
 )
 
 
@@ -241,8 +250,7 @@ class C2f(nn.Module):
 
     def forward_split(self, x):
         """Forward pass using split() instead of chunk()."""
-        y = self.cv1(x).split((self.c, self.c), 1)
-        y = [y[0], y[1]]
+        y = list(self.cv1(x).split((self.c, self.c), 1))
         y.extend(m(y[-1]) for m in self.m)
         return self.cv2(torch.cat(y, 1))
 
@@ -281,8 +289,8 @@ class RepC3(nn.Module):
         """Initialize CSP Bottleneck with a single convolution using input channels, output channels, and number."""
         super().__init__()
         c_ = int(c2 * e)  # hidden channels
-        self.cv1 = Conv(c1, c_, 1, 1)
-        self.cv2 = Conv(c1, c_, 1, 1)
+        self.cv1 = Conv(c1, c2, 1, 1)
+        self.cv2 = Conv(c1, c2, 1, 1)
         self.m = nn.Sequential(*[RepConv(c_, c_) for _ in range(n)])
         self.cv3 = Conv(c_, c2, 1, 1) if c_ != c2 else nn.Identity()
 
@@ -1109,88 +1117,118 @@ class SCDown(nn.Module):
         """Applies convolution and downsampling to the input tensor in the SCDown module."""
         return self.cv2(self.cv1(x))
 
+# class AAttn(nn.Module):
+#     """
+#     Area-attention module for YOLO models, providing efficient attention mechanisms.
 
-class TorchVision(nn.Module):
-    """
-    TorchVision module to allow loading any torchvision model.
+#     This module implements an area-based attention mechanism that processes input features in a spatially-aware manner,
+#     making it particularly effective for object detection tasks.
 
-    This class provides a way to load a model from the torchvision library, optionally load pre-trained weights, and customize the model by truncating or unwrapping layers.
+#     Attributes:
+#         area (int): Number of areas the feature map is divided.
+#         num_heads (int): Number of heads into which the attention mechanism is divided.
+#         head_dim (int): Dimension of each attention head.
+#         qkv (Conv): Convolution layer for computing query, key and value tensors.
+#         proj (Conv): Projection convolution layer.
+#         pe (Conv): Position encoding convolution layer.
 
-    Attributes:
-        m (nn.Module): The loaded torchvision model, possibly truncated and unwrapped.
+#     Methods:
+#         forward: Applies area-attention to input tensor.
 
-    Args:
-        model (str): Name of the torchvision model to load.
-        weights (str, optional): Pre-trained weights to load. Default is "DEFAULT".
-        unwrap (bool, optional): If True, unwraps the model to a sequential containing all but the last `truncate` layers. Default is True.
-        truncate (int, optional): Number of layers to truncate from the end if `unwrap` is True. Default is 2.
-        split (bool, optional): Returns output from intermediate child modules as list. Default is False.
-    """
+#     Examples:
+#         >>> attn = AAttn(dim=256, num_heads=8, area=4)
+#         >>> x = torch.randn(1, 256, 32, 32)
+#         >>> output = attn(x)
+#         >>> print(output.shape)
+#         torch.Size([1, 256, 32, 32])
+#     """
 
-    def __init__(self, model, weights="DEFAULT", unwrap=True, truncate=2, split=False):
-        """Load the model and weights from torchvision."""
-        import torchvision  # scope for faster 'import ultralytics'
+#     def __init__(self, dim, num_heads, area=1):
+#         """
+#         Initializes an Area-attention module for YOLO models.
 
-        super().__init__()
-        if hasattr(torchvision.models, "get_model"):
-            self.m = torchvision.models.get_model(model, weights=weights)
-        else:
-            self.m = torchvision.models.__dict__[model](pretrained=bool(weights))
-        if unwrap:
-            layers = list(self.m.children())
-            if isinstance(layers[0], nn.Sequential):  # Second-level for some models like EfficientNet, Swin
-                layers = [*list(layers[0].children()), *layers[1:]]
-            self.m = nn.Sequential(*(layers[:-truncate] if truncate else layers))
-            self.split = split
-        else:
-            self.split = False
-            self.m.head = self.m.heads = nn.Identity()
+#         Args:
+#             dim (int): Number of hidden channels.
+#             num_heads (int): Number of heads into which the attention mechanism is divided.
+#             area (int): Number of areas the feature map is divided, default is 1.
+#         """
+#         super().__init__()
+#         self.area = area
 
-    def forward(self, x):
-        """Forward pass through the model."""
-        if self.split:
-            y = [x]
-            y.extend(m(y[-1]) for m in self.m)
-        else:
-            y = self.m(x)
-        return y
+#         self.num_heads = num_heads
+#         self.head_dim = head_dim = dim // num_heads
+#         all_head_dim = head_dim * self.num_heads
 
+#         self.qkv = Conv(dim, all_head_dim * 3, 1, act=False)
+#         self.proj = Conv(all_head_dim, dim, 1, act=False)
+#         self.pe = Conv(all_head_dim, dim, 7, 1, 3, g=dim, act=False)
+
+#     def forward(self, x):
+#         """Processes the input tensor 'x' through the area-attention."""
+#         B, C, H, W = x.shape
+#         N = H * W
+
+#         qkv = self.qkv(x).flatten(2).transpose(1, 2)
+#         if self.area > 1:
+#             qkv = qkv.reshape(B * self.area, N // self.area, C * 3)
+#             B, N, _ = qkv.shape
+#         q, k, v = (
+#             qkv.view(B, N, self.num_heads, self.head_dim * 3)
+#             .permute(0, 2, 3, 1)
+#             .split([self.head_dim, self.head_dim, self.head_dim], dim=2)
+#         )
+
+#         if FLASH_ATTN_FLAG:
+#             x = flash_attn_func(
+#                 q.contiguous().half(),
+#                 k.contiguous().half(),
+#                 v.contiguous().half()
+#             ).to(q.dtype)
+#         else:
+#             attn = (q.transpose(-2, -1) @ k) * (self.head_dim**-0.5)
+#             attn = attn.softmax(dim=-1)
+#             x = v @ attn.transpose(-2, -1)
+#             x = x.permute(0, 3, 1, 2)
+#             v = v.permute(0, 3, 1, 2)
+
+#         if self.area > 1:
+#             x = x.reshape(B // self.area, N * self.area, C)
+#             v = v.reshape(B // self.area, N * self.area, C)
+#             B, N, _ = x.shape
+
+#         x = x.reshape(B, H, W, C).permute(0, 3, 1, 2)
+#         v = v.reshape(B, H, W, C).permute(0, 3, 1, 2)
+
+#         x = x + self.pe(v)
+#         return self.proj(x)
 
 class AAttn(nn.Module):
     """
-    Area-attention module for YOLO models, providing efficient attention mechanisms.
-
-    This module implements an area-based attention mechanism that processes input features in a spatially-aware manner,
-    making it particularly effective for object detection tasks.
+    Area-attention module with the requirement of flash attention.
 
     Attributes:
-        area (int): Number of areas the feature map is divided.
-        num_heads (int): Number of heads into which the attention mechanism is divided.
-        head_dim (int): Dimension of each attention head.
-        qkv (Conv): Convolution layer for computing query, key and value tensors.
-        proj (Conv): Projection convolution layer.
-        pe (Conv): Position encoding convolution layer.
+        dim (int): Number of hidden channels;
+        num_heads (int): Number of heads into which the attention mechanism is divided;
+        area (int, optional): Number of areas the feature map is divided. Defaults to 1.
 
     Methods:
-        forward: Applies area-attention to input tensor.
+        forward: Performs a forward process of input tensor and outputs a tensor after the execution of the area attention mechanism.
 
     Examples:
-        >>> attn = AAttn(dim=256, num_heads=8, area=4)
-        >>> x = torch.randn(1, 256, 32, 32)
-        >>> output = attn(x)
+        >>> import torch
+        >>> from ultralytics.nn.modules import AAttn
+        >>> model = AAttn(dim=64, num_heads=2, area=4)
+        >>> x = torch.randn(2, 64, 128, 128)
+        >>> output = model(x)
         >>> print(output.shape)
-        torch.Size([1, 256, 32, 32])
+    
+    Notes: 
+        recommend that dim//num_heads be a multiple of 32 or 64.
+
     """
 
     def __init__(self, dim, num_heads, area=1):
-        """
-        Initializes an Area-attention module for YOLO models.
-
-        Args:
-            dim (int): Number of hidden channels.
-            num_heads (int): Number of heads into which the attention mechanism is divided.
-            area (int): Number of areas the feature map is divided, default is 1.
-        """
+        """Initializes the area-attention module, a simple yet efficient attention module for YOLO."""
         super().__init__()
         self.area = area
 
@@ -1198,41 +1236,69 @@ class AAttn(nn.Module):
         self.head_dim = head_dim = dim // num_heads
         all_head_dim = head_dim * self.num_heads
 
-        self.qkv = Conv(dim, all_head_dim * 3, 1, act=False)
+        self.qk = Conv(dim, all_head_dim * 2, 1, act=False)
+        self.v = Conv(dim, all_head_dim, 1, act=False)
         self.proj = Conv(all_head_dim, dim, 1, act=False)
-        self.pe = Conv(all_head_dim, dim, 7, 1, 3, g=dim, act=False)
+
+        self.pe = Conv(all_head_dim, dim, 5, 1, 2, g=dim, act=False)
+
 
     def forward(self, x):
-        """Processes the input tensor 'x' through the area-attention."""
+        """Processes the input tensor 'x' through the area-attention"""
         B, C, H, W = x.shape
         N = H * W
 
-        qkv = self.qkv(x).flatten(2).transpose(1, 2)
-        if self.area > 1:
-            qkv = qkv.reshape(B * self.area, N // self.area, C * 3)
-            B, N, _ = qkv.shape
-        q, k, v = (
-            qkv.view(B, N, self.num_heads, self.head_dim * 3)
-            .permute(0, 2, 3, 1)
-            .split([self.head_dim, self.head_dim, self.head_dim], dim=2)
-        )
-        attn = (q.transpose(-2, -1) @ k) * (self.head_dim**-0.5)
-        attn = attn.softmax(dim=-1)
-        x = v @ attn.transpose(-2, -1)
-        x = x.permute(0, 3, 1, 2)
-        v = v.permute(0, 3, 1, 2)
+        if x.is_cuda and FLASH_ATTN_FLAG:
+            qk = self.qk(x).flatten(2).transpose(1, 2)
+            v = self.v(x)
+            pp = self.pe(v)
+            v = v.flatten(2).transpose(1, 2)
 
-        if self.area > 1:
-            x = x.reshape(B // self.area, N * self.area, C)
-            v = v.reshape(B // self.area, N * self.area, C)
-            B, N, _ = x.shape
+            if self.area > 1:
+                qk = qk.reshape(B * self.area, N // self.area, C * 2)
+                v = v.reshape(B * self.area, N // self.area, C)
+                B, N, _ = qk.shape
+            q, k = qk.split([C, C], dim=2)
+            q = q.view(B, N, self.num_heads, self.head_dim)
+            k = k.view(B, N, self.num_heads, self.head_dim)
+            v = v.view(B, N, self.num_heads, self.head_dim)
 
-        x = x.reshape(B, H, W, C).permute(0, 3, 1, 2).contiguous()
-        v = v.reshape(B, H, W, C).permute(0, 3, 1, 2).contiguous()
+            x = flash_attn_func(
+                q.contiguous().half(),
+                k.contiguous().half(),
+                v.contiguous().half()
+            ).to(q.dtype)
 
-        x = x + self.pe(v)
-        return self.proj(x)
+            if self.area > 1:
+                x = x.reshape(B // self.area, N * self.area, C)
+                B, N, _ = x.shape
+            x = x.reshape(B, H, W, C).permute(0, 3, 1, 2)
+        else:
+            qk = self.qk(x).flatten(2)
+            v = self.v(x)
+            pp = self.pe(v)
+            v = v.flatten(2)
+            if self.area > 1:
+                qk = qk.reshape(B * self.area, C * 2, N // self.area)
+                v = v.reshape(B * self.area, C, N // self.area)
+                B, _, N = qk.shape
 
+            q, k = qk.split([C, C], dim=1)
+            q = q.view(B, self.num_heads, self.head_dim, N)
+            k = k.view(B, self.num_heads, self.head_dim, N)
+            v = v.view(B, self.num_heads, self.head_dim, N)
+            attn = (q.transpose(-2, -1) @ k) * (self.head_dim ** -0.5)
+            max_attn = attn.max(dim=-1, keepdim=True).values
+            exp_attn = torch.exp(attn - max_attn)
+            attn = exp_attn / exp_attn.sum(dim=-1, keepdim=True)
+            x = (v @ attn.transpose(-2, -1))
+
+            if self.area > 1:
+                x = x.reshape(B // self.area, C, N * self.area)
+                B, _, N = x.shape
+            x = x.reshape(B, C, H, W)
+
+        return self.proj(x + pp)
 
 class ABlock(nn.Module):
     """
@@ -1347,6 +1413,7 @@ class A2C2f(nn.Module):
             else C3k(c_, c_, 2, shortcut, g)
             for _ in range(n)
         )
+        # print(c1, c2, n, a2, area)
 
     def forward(self, x):
         """Forward pass through R-ELAN layer."""
