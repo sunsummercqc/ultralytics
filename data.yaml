@@ -4,8 +4,11 @@
 # train: [train.txt]
 # val: [val.txt]
 # test: [test.txt]
-train: /root/yolo/dataset/sbd_dataset/coco/images/train2017
-val: /root/yolo/dataset/sbd_dataset/coco/images/val2017
+train: /root/ultralytics/root/output/images/train
+val: /root/ultralytics/root/output/images/val
+test: 
+- /root/ultralytics/root/output/images/test_v3
+- /root/sbd_dataset/coco/images/val2017
 
 # number of classes
 nc: 7

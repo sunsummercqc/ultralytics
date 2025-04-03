@@ -6,7 +6,8 @@ import re
 import types
 from copy import deepcopy
 from pathlib import Path
-
+from ultralytics.nn.modules.head import Detect_SEAM 
+from ultralytics.nn.modules.head import Detect_MultiSEAM
 import torch
 
 from ultralytics.nn.modules import (
@@ -63,6 +64,10 @@ from ultralytics.nn.modules import (
     TorchVision,
     WorldDetect,
     v10Detect,
+    Detect_SEAM,
+    EUCB,
+    Fusion,
+    CSP_MSCB,
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
@@ -92,6 +97,7 @@ except ImportError:
     thop = None  # conda support without 'ultralytics-thop' installed
 
 
+DETECT_CLASS = (Detect,  Detect_SEAM, Detect_MultiSEAM)
 class BaseModel(torch.nn.Module):
     """The BaseModel class serves as a base class for all the models in the Ultralytics YOLO family."""
 
@@ -256,7 +262,7 @@ class BaseModel(torch.nn.Module):
         """
         self = super()._apply(fn)
         m = self.model[-1]  # Detect()
-        if isinstance(m, Detect):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect
+        if isinstance(m, DETECT_CLASS):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect
             m.stride = fn(m.stride)
             m.anchors = fn(m.anchors)
             m.strides = fn(m.strides)
@@ -310,6 +316,14 @@ class DetectionModel(BaseModel):
             )
             self.yaml["backbone"][0][2] = "nn.Identity"
 
+        # Warehouse_Manager
+        warehouse_manager_flag = self.yaml.get('Warehouse_Manager', False)
+        self.warehouse_manager = None
+        if warehouse_manager_flag:
+            self.warehouse_manager = Warehouse_Manager(cell_num_ratio=self.yaml.get('Warehouse_Manager_Ratio', 1.0))
+        
+
+
         # Define model
         ch = self.yaml["ch"] = self.yaml.get("ch", ch)  # input channels
         if nc and nc != self.yaml["nc"]:
@@ -319,11 +333,12 @@ class DetectionModel(BaseModel):
         self.names = {i: f"{i}" for i in range(self.yaml["nc"])}  # default names dict
         self.inplace = self.yaml.get("inplace", True)
         self.end2end = getattr(self.model[-1], "end2end", False)
+        self.fgi = getattr(self.model[-1], "FGIF", False)
 
         # Build strides
         m = self.model[-1]  # Detect()
-        if isinstance(m, Detect):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect
-            s = 256  # 2x min stride
+        if isinstance(m, DETECT_CLASS):  # includes all Detect subclasses like Segment, Pose, OBB, WorldDetect
+            s = 640  # 2x min stride
             m.inplace = self.inplace
 
             def _forward(x):
@@ -982,6 +997,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             SCDown,
             C2fCIB,
             A2C2f,
+            CSP_MSCB,
+
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1001,22 +1018,31 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             C2fCIB,
             C2PSA,
             A2C2f,
+            CSP_MSCB,
+            
+
         }
     )
+    is_backbone = False
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
-        m = (
-            getattr(torch.nn, m[3:])
-            if "nn." in m
-            else getattr(__import__("torchvision").ops, m[16:])
-            if "torchvision.ops." in m
-            else globals()[m]
-        )  # get module
+        try:
+            if m == 'node_mode':
+                m = d[m]
+                if len(args) > 0:
+                    if args[0] == 'head_channel':
+                        args[0] = int(d[args[0]])
+            t = m
+            m = getattr(torch.nn, m[3:]) if 'nn.' in m else globals()[m]  # get module
+        except:
+            pass
         for j, a in enumerate(args):
             if isinstance(a, str):
                 with contextlib.suppress(ValueError):
                     args[j] = locals()[a] if a in locals() else ast.literal_eval(a)
         n = n_ = max(round(n * depth), 1) if n > 1 else n  # depth gain
         if m in base_modules:
+            if args[0] == 'head_channel':
+                args[0] = d[args[0]]
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
                 c2 = make_divisible(min(c2, max_channels) * width, 8)
@@ -1036,6 +1062,14 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 legacy = False
                 if scale in "lx":  # for L/X sizes
                     args.extend((True, 1.2))
+        elif m is EUCB:
+            c2 = ch[f]
+            args = [c2, *args]
+            # print(args)
+        elif m is Fusion:
+            args[0] = d[args[0]]
+            c1, c2 = [ch[x] for x in f], (sum([ch[x] for x in f]) if args[0] == 'concat' else ch[f[0]])
+            args = [c1, args[0]]
         elif m is AIFI:
             args = [ch[f], *args]
         elif m in frozenset({HGStem, HGBlock}):
@@ -1050,12 +1084,13 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             args = [ch[f]]
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
-        elif m in frozenset({Detect, WorldDetect, Segment, Pose, OBB, ImagePoolingAttn, v10Detect}):
+        elif m in frozenset((Detect, WorldDetect, Segment, Pose, OBB, ImagePoolingAttn, v10Detect) + DETECT_CLASS):
             args.append([ch[x] for x in f])
             if m is Segment:
                 args[2] = make_divisible(min(args[2], max_channels) * width, 8)
             if m in {Detect, Segment, Pose, OBB}:
                 m.legacy = legacy
+        
         elif m is RTDETRDecoder:  # special case, channels arg must be passed in index 1
             args.insert(1, [ch[x] for x in f])
         elif m is CBLinear:

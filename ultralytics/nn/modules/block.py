@@ -9,6 +9,7 @@ from ultralytics.utils.torch_utils import fuse_conv_and_bn
 
 from .conv import Conv, DWConv, GhostConv, LightConv, RepConv, autopad
 from .transformer import TransformerBlock
+import math
 
 __all__ = (
     "DFL",
@@ -50,7 +51,171 @@ __all__ = (
     "PSA",
     "SCDown",
     "TorchVision",
+    "SEAM",
+    "MultiSEAM",
+    "Fusion",
+    "EUCB",
+    "CSP_MSCB",
+
+
 )
+
+######################################## BIFPN begin ########################################
+
+class Fusion(nn.Module):
+    def __init__(self, inc_list, fusion='bifpn') -> None:
+        super().__init__()
+        
+        assert fusion in ['weight', 'adaptive', 'concat', 'bifpn', 'SDI']
+        self.fusion = fusion
+        
+        if self.fusion == 'bifpn':
+            self.fusion_weight = nn.Parameter(torch.ones(len(inc_list), dtype=torch.float32), requires_grad=True)
+            self.relu = nn.ReLU()
+            self.epsilon = 1e-4
+        elif self.fusion == 'SDI':
+            self.SDI = SDI(inc_list)
+        else:
+            self.fusion_conv = nn.ModuleList([Conv(inc, inc, 1) for inc in inc_list])
+
+            if self.fusion == 'adaptive':
+                self.fusion_adaptive = Conv(sum(inc_list), len(inc_list), 1)
+        
+    
+    def forward(self, x):
+        if self.fusion in ['weight', 'adaptive']:
+            for i in range(len(x)):
+                x[i] = self.fusion_conv[i](x[i])
+        if self.fusion == 'weight':
+            return torch.sum(torch.stack(x, dim=0), dim=0)
+        elif self.fusion == 'adaptive':
+            fusion = torch.softmax(self.fusion_adaptive(torch.cat(x, dim=1)), dim=1)
+            x_weight = torch.split(fusion, [1] * len(x), dim=1)
+            return torch.sum(torch.stack([x_weight[i] * x[i] for i in range(len(x))], dim=0), dim=0)
+        elif self.fusion == 'concat':
+            return torch.cat(x, dim=1)
+        elif self.fusion == 'bifpn':
+            fusion_weight = self.relu(self.fusion_weight.clone())
+            fusion_weight = fusion_weight / (torch.sum(fusion_weight, dim=0) + self.epsilon)
+            return torch.sum(torch.stack([fusion_weight[i] * x[i] for i in range(len(x))], dim=0), dim=0)
+        elif self.fusion == 'SDI':
+            return self.SDI(x)
+
+######################################## BIFPN end ########################################
+
+
+
+######################################## SEAM start ########################################
+
+class Residual(nn.Module):
+    def __init__(self, fn):
+        super(Residual, self).__init__()
+        self.fn = fn
+
+    def forward(self, x):
+        return self.fn(x) + x
+
+class SEAM(nn.Module):
+    def __init__(self, c1, c2, n, reduction=16):
+        super(SEAM, self).__init__()
+        if c1 != c2:
+            c2 = c1
+        self.DCovN = nn.Sequential(
+            *[nn.Sequential(
+                Residual(nn.Sequential(
+                    nn.Conv2d(in_channels=c2, out_channels=c2, kernel_size=3, stride=1, padding=1, groups=c2),
+                    nn.GELU(),
+                    nn.BatchNorm2d(c2)
+                )),
+                nn.Conv2d(in_channels=c2, out_channels=c2, kernel_size=1, stride=1, padding=0, groups=1),
+                nn.GELU(),
+                nn.BatchNorm2d(c2)
+            ) for i in range(n)]
+        )
+        self.avg_pool = torch.nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(c2, c2 // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(c2 // reduction, c2, bias=False),
+            nn.Sigmoid()
+        )
+
+        self._initialize_weights()
+        # self.initialize_layer(self.avg_pool)
+        self.initialize_layer(self.fc)
+
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y = self.DCovN(x)
+        y = self.avg_pool(y).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1)
+        y = torch.exp(y)
+        return x * y.expand_as(x)
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.xavier_uniform_(m.weight, gain=1)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def initialize_layer(self, layer):
+        if isinstance(layer, (nn.Conv2d, nn.Linear)):
+            torch.nn.init.normal_(layer.weight, mean=0., std=0.001)
+            if layer.bias is not None:
+                torch.nn.init.constant_(layer.bias, 0)
+
+def DcovN(c1, c2, depth, kernel_size=3, patch_size=3):
+    dcovn = nn.Sequential(
+        nn.Conv2d(c1, c2, kernel_size=patch_size, stride=patch_size),
+        nn.SiLU(),
+        nn.BatchNorm2d(c2),
+        *[nn.Sequential(
+            Residual(nn.Sequential(
+                nn.Conv2d(in_channels=c2, out_channels=c2, kernel_size=kernel_size, stride=1, padding=1, groups=c2),
+                nn.SiLU(),
+                nn.BatchNorm2d(c2)
+            )),
+            nn.Conv2d(in_channels=c2, out_channels=c2, kernel_size=1, stride=1, padding=0, groups=1),
+            nn.SiLU(),
+            nn.BatchNorm2d(c2)
+        ) for i in range(depth)]
+    )
+    return dcovn
+
+class MultiSEAM(nn.Module):
+    def __init__(self, c1, c2, depth, kernel_size=3, patch_size=[3, 5, 7], reduction=16):
+        super(MultiSEAM, self).__init__()
+        if c1 != c2:
+            c2 = c1
+        self.DCovN0 = DcovN(c1, c2, depth, kernel_size=kernel_size, patch_size=patch_size[0])
+        self.DCovN1 = DcovN(c1, c2, depth, kernel_size=kernel_size, patch_size=patch_size[1])
+        self.DCovN2 = DcovN(c1, c2, depth, kernel_size=kernel_size, patch_size=patch_size[2])
+        self.avg_pool = torch.nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(c2, c2 // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(c2 // reduction, c2, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _ = x.size()
+        y0 = self.DCovN0(x)
+        y1 = self.DCovN1(x)
+        y2 = self.DCovN2(x)
+        y0 = self.avg_pool(y0).view(b, c)
+        y1 = self.avg_pool(y1).view(b, c)
+        y2 = self.avg_pool(y2).view(b, c)
+        y4 = self.avg_pool(x).view(b, c)
+        y = (y0 + y1 + y2 + y4) / 4
+        y = self.fc(y).view(b, c, 1, 1)
+        y = torch.exp(y)
+        return x * y.expand_as(x)
+
+######################################## SEAM end ########################################
 
 
 class DFL(nn.Module):
@@ -1356,3 +1521,134 @@ class A2C2f(nn.Module):
         if self.gamma is not None:
             return x + self.gamma.view(-1, len(self.gamma), 1, 1) * y
         return y
+
+######################################## Efficient Multi-Branch&Scale FPN start ########################################
+
+#   Efficient up-convolution block (EUCB)
+class EUCB(nn.Module):
+    def __init__(self, in_channels, kernel_size=3, stride=1):
+        super(EUCB,self).__init__()
+
+        self.in_channels = in_channels
+        self.out_channels = in_channels
+        self.up_dwc = nn.Sequential(
+            nn.Upsample(scale_factor=2),
+            Conv(self.in_channels, self.in_channels, kernel_size, g=self.in_channels, s=stride)
+        )
+        self.pwc = nn.Sequential(
+            nn.Conv2d(self.in_channels, self.out_channels, kernel_size=1, stride=1, padding=0, bias=True)
+        )
+
+    def forward(self, x):
+        x = self.up_dwc(x)
+        x = self.channel_shuffle(x, self.in_channels)
+        x = self.pwc(x)
+        return x
+    
+    def channel_shuffle(self, x, groups):
+        batchsize, num_channels, height, width = x.data.size()
+        channels_per_group = num_channels // groups
+        x = x.view(batchsize, groups, channels_per_group, height, width)
+        x = torch.transpose(x, 1, 2).contiguous()
+        x = x.view(batchsize, -1, height, width)
+        return x
+
+#   Multi-scale depth-wise convolution (MSDC)
+class MSDC(nn.Module):
+    def __init__(self, in_channels, kernel_sizes, stride, dw_parallel=True):
+        super(MSDC, self).__init__()
+
+        self.in_channels = in_channels
+        self.kernel_sizes = kernel_sizes
+        self.dw_parallel = dw_parallel
+
+        self.dwconvs = nn.ModuleList([
+            nn.Sequential(
+                Conv(self.in_channels, self.in_channels, kernel_size, s=stride, g=self.in_channels)
+            )
+            for kernel_size in self.kernel_sizes
+        ])
+
+    def forward(self, x):
+        # Apply the convolution layers in a loop
+        outputs = []
+        for dwconv in self.dwconvs:
+            dw_out = dwconv(x)
+            outputs.append(dw_out)
+            if self.dw_parallel == False:
+                x = x+dw_out
+        # You can return outputs based on what you intend to do with them
+        return outputs
+
+class MSCB(nn.Module):
+    """
+    Multi-scale convolution block (MSCB) 
+    """
+    def __init__(self, in_channels, out_channels, kernel_sizes=[1,3,5], stride=1, expansion_factor=2, dw_parallel=True, add=True):
+        super(MSCB, self).__init__()
+        
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.stride = stride
+        self.kernel_sizes = kernel_sizes
+        self.expansion_factor = expansion_factor
+        self.dw_parallel = dw_parallel
+        self.add = add
+        self.n_scales = len(self.kernel_sizes)
+        # check stride value
+        assert self.stride in [1, 2]
+        # Skip connection if stride is 1
+        self.use_skip_connection = True if self.stride == 1 else False
+
+        # expansion factor
+        self.ex_channels = int(self.in_channels * self.expansion_factor)
+        self.pconv1 = nn.Sequential(
+            # pointwise convolution
+            Conv(self.in_channels, self.ex_channels, 1)
+        )
+        self.msdc = MSDC(self.ex_channels, self.kernel_sizes, self.stride, dw_parallel=self.dw_parallel)
+        if self.add == True:
+            self.combined_channels = self.ex_channels*1
+        else:
+            self.combined_channels = self.ex_channels*self.n_scales
+        self.pconv2 = nn.Sequential(
+            # pointwise convolution
+            Conv(self.combined_channels, self.out_channels, 1, act=False)
+        )
+        if self.use_skip_connection and (self.in_channels != self.out_channels):
+            self.conv1x1 = nn.Conv2d(self.in_channels, self.out_channels, 1, 1, 0, bias=False)
+
+    def forward(self, x):
+        pout1 = self.pconv1(x)
+        msdc_outs = self.msdc(pout1)
+        if self.add == True:
+            dout = 0
+            for dwout in msdc_outs:
+                dout = dout + dwout
+        else:
+            dout = torch.cat(msdc_outs, dim=1)
+        dout = self.channel_shuffle(dout, math.gcd(self.combined_channels,self.out_channels))
+        out = self.pconv2(dout)
+        if self.use_skip_connection:
+            if self.in_channels != self.out_channels:
+                x = self.conv1x1(x)
+            return x + out
+        else:
+            return out
+    
+    def channel_shuffle(self, x, groups):
+        batchsize, num_channels, height, width = x.data.size()
+        channels_per_group = num_channels // groups
+        x = x.view(batchsize, groups, channels_per_group, height, width)
+        x = torch.transpose(x, 1, 2).contiguous()
+        x = x.view(batchsize, -1, height, width)
+        return x
+
+class CSP_MSCB(C2f):
+    def __init__(self, c1, c2, n=1, kernel_sizes=[1,3,5], shortcut=False, g=1, e=0.5):
+        super().__init__(c1, c2, n, shortcut, g, e)
+        
+        self.m = nn.ModuleList(MSCB(self.c, self.c, kernel_sizes=kernel_sizes) for _ in range(n))
+
+######################################## Multi-Branch&Scale-FPN end ########################################
+

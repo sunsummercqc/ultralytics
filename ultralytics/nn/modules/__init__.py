@@ -16,7 +16,7 @@ Examples:
     >>> torch.onnx.export(m, x, f)
     >>> os.system(f"onnxslim {f} {f} && open {f}")  # pip install onnxslim
 """
-
+from .head import *
 from .block import (
     C1,
     C2,
@@ -58,6 +58,12 @@ from .block import (
     ResNetLayer,
     SCDown,
     TorchVision,
+    SEAM,
+    MultiSEAM,
+    EUCB,
+    Fusion,
+    CSP_MSCB,
+    
 )
 from .conv import (
     CBAM,
@@ -75,7 +81,7 @@ from .conv import (
     RepConv,
     SpatialAttention,
 )
-from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect
+from .head import OBB, Classify, Detect, Pose, RTDETRDecoder, Segment, WorldDetect, v10Detect, Detect_SEAM, Detect_MultiSEAM
 from .transformer import (
     AIFI,
     MLP,
@@ -162,4 +168,10 @@ __all__ = (
     "TorchVision",
     "Index",
     "A2C2f",
+    "SEAM",
+    "MultiSEAM",
+    "Fusion",
+    "EUCB",
+    "CSP_MSCB",
+
 )
