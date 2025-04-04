@@ -17,7 +17,7 @@ def get_weight_size(path):
     return f'{stats.st_size / 1024 / 1024:.1f}'
 
 if __name__ == '__main__':
-    model_path = 'runs/train/yolov11_imp2/weights/best.pt'
+    model_path = 'runs/train/yolov8-imp24/weights/best.pt'
     model = YOLO(model_path) # 选择训练好的权重路径
     result = model.val(data='/root/ultralytics/data.yaml',
                         split='test', # split可以选择train、val、test 根据自己的数据集情况来选择.
@@ -27,7 +27,7 @@ if __name__ == '__main__':
                         # rect=False,
                         # save_json=True, # if you need to cal coco metrice
                         project='runs/test',
-                        name='yolov11-imp-datav1_v3',
+                        name='yolov8-imp-head2-datav1_v3',
                         )
     
     if model.task == 'detect': # 仅目标检测任务适用
